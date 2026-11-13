@@ -15,6 +15,17 @@
   .card .big{font-size:34px;font-weight:900;color:#5a3d1e}
   .card button{display:block;width:100%;height:48px;margin-top:12px;border:none;border-radius:24px;font-size:17px;font-weight:800;color:#fff;background:#f08a24;box-shadow:0 4px 0 #b55f0c;font-family:inherit}
   .card button.sub{background:#8a7bd8;box-shadow:0 4px 0 #5b4daa}
+  .card button{height:auto;min-height:48px;padding:8px}
+  .card button:disabled{background:#c9b9a5;box-shadow:none}
+  .card.wide{width:min(92vw,520px);max-height:92vh;overflow-y:auto}
+  .nums{display:grid;grid-template-columns:repeat(11,1fr);gap:4px;margin:6px 0}
+  .card .nums button{min-height:34px;height:34px;margin:0;padding:0;font-size:14px;border-radius:8px;background:#fff;color:#5a3d1e;box-shadow:0 2px 0 #c99b66}
+  .card .nums button.on{background:#f08a24;color:#fff}
+  .grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:8px 0}
+  .card .grid .slot{position:relative;aspect-ratio:1;min-height:0;height:auto;margin:0;padding:0;border-radius:50%;background:#fff;border:3px dashed #c99b66;box-shadow:none;overflow:hidden;font-size:20px}
+  .slot img{width:100%;height:100%;object-fit:cover;display:block}
+  .slot b{position:absolute;right:0;bottom:0;background:#5a3d1e;color:#fff;font-size:11px;border-radius:8px;padding:0 5px}
+  #winFace img{width:110px;height:110px;border-radius:50%;border:5px solid #f3c64a;object-fit:cover;margin:6px 0}
 </style>
 </head>
 <body>
@@ -25,15 +36,44 @@
   <p>スコア</p><div class="big" id="overScore">0</div>
   <p id="overBest"></p>
   <button id="retry">もう一度</button>
+  <button class="sub" id="toMode" style="background:#b9a58c;box-shadow:0 4px 0 #8a765e">モード選択へ</button>
 </div></div>
 
 <div class="ov" id="winOv"><div class="card">
-  <h2>🏆 金の100歳 達成！ 🏆</h2>
-  <p>人生を三周しました。</p>
+  <h2 id="winTitle">🏆 金の100歳 達成！ 🏆</h2>
+  <div id="winFace"></div>
+  <p id="winSub">人生を三周しました。</p>
   <p>スコア</p><div class="big" id="winScore">0</div>
   <button id="cont">このまま続ける</button>
   <button class="sub" id="retry2">最初から</button>
+  <button class="sub" id="toMode2" style="background:#b9a58c;box-shadow:0 4px 0 #8a765e">モード選択へ</button>
 </div></div>
+
+<div class="ov on" id="modeOv"><div class="card">
+  <h2>エイジスイカ</h2>
+  <p>同じ人どうしをくっつけて、育てよう</p>
+  <button id="mNormal">ふつうモード<br><small style="font-weight:400">あかちゃん → 100歳 → 銀 → 金</small></button>
+  <button class="sub" id="mFace">顔写真モード<br><small style="font-weight:400">その場で撮った顔でつなぐ（2〜12人）</small></button>
+</div></div>
+
+<div class="ov" id="faceOv"><div class="card wide">
+  <h2>顔写真モード</h2>
+  <p>何人でつなぐ？</p>
+  <div class="nums" id="fNums"></div>
+  <p style="font-size:13px">1番がいちばん小さく、最後の人がゴールです。丸をタップして撮影。</p>
+  <div class="grid" id="fGrid"></div>
+  <button id="fStart">スタート！</button>
+  <button class="sub" id="fBack">戻る</button>
+</div></div>
+
+<div class="ov" id="cropOv"><div class="card wide">
+  <h2>顔を丸に合わせよう</h2>
+  <canvas id="cropCv" style="touch-action:none;border-radius:12px;display:block;margin:6px auto"></canvas>
+  <input type="range" id="zoom" min="1" max="4" step="0.05" value="1.4" style="width:100%">
+  <button id="cropOk">これでOK</button>
+  <button class="sub" id="cropRetake">撮り直す</button>
+</div></div>
+<input type="file" id="camIn" accept="image/*" capture="user" style="display:none">
 
 <script src="matter.min.js"></script>
 <script>
@@ -50,11 +90,26 @@ const W = 400, H = 640, WALL = 14, LINE = 118, DROP_Y = 62;   // 箱の中の座
 const DROP_LEVELS = [0, 0, 0, 1, 1, 2, 2, 3, 4];             // 落ちてくる人の候補（若いほど出やすい）
 
 // ================= 状態 =================
-let engine, score = 0, best = load('best', 0), cur, next, dropX = W / 2, canDrop = true, over = false, won = false;
+let engine, score = 0, best = 0, cur, next, dropX = W / 2, canDrop = true, over = false, won = false;
 let effects = [], banner = null, overTimer = 0;
 function load(k, d){ try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; }catch(e){ return d; } }
 function save(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
-const randDrop = () => ({tier: 0, lv: DROP_LEVELS[Math.floor(Math.random() * DROP_LEVELS.length)]});
+// ---- 顔写真モード ----
+let MODE = 'normal';            // normal / face
+let FACES = [], FACE_IMG = [], FN = 0;   // 顔写真（小さい順）と人数
+function rad(lv){
+  if (MODE !== 'face') return RADII[lv];
+  const max = Math.min(104, 17 + (FN - 1) * 9.5);
+  return FN <= 1 ? 30 : 17 + (max - 17) * lv / (FN - 1);
+}
+function randDrop(){
+  if (MODE === 'face'){
+    const n = FN <= 3 ? 1 : Math.min(5, FN - 2);          // 落ちてくるのは小さいほうの数人だけ
+    const pool = []; for (let i = 0; i < n; i++) for (let k = 0; k < n - i; k++) pool.push(i);
+    return {tier: 0, lv: pool[Math.floor(Math.random() * pool.length)]};
+  }
+  return {tier: 0, lv: DROP_LEVELS[Math.floor(Math.random() * DROP_LEVELS.length)]};
+}
 
 function reset(){
   engine = Engine.create({gravity: {y: 1.1}});
@@ -66,13 +121,13 @@ function reset(){
   ]);
   Events.on(engine, 'collisionStart', onCollide);
   Events.on(engine, 'collisionActive', onCollide);
-  score = 0; over = false; won = false; effects = []; banner = null; overTimer = 0;
+  score = 0; best = load(bestKey(), 0); over = false; won = false; effects = []; banner = null; overTimer = 0;
   cur = randDrop(); next = randDrop(); canDrop = true;
   $('overOv').classList.remove('on'); $('winOv').classList.remove('on');
 }
 
 function makePerson(x, y, tier, lv){
-  const b = Bodies.circle(x, y, RADII[lv], {restitution: .12, friction: .35, frictionStatic: .6, density: .0012 + lv * .0001});
+  const b = Bodies.circle(x, y, rad(lv), {restitution: .12, friction: .35, frictionStatic: .6, density: .0012 + lv * .0001});
   b.person = {tier, lv, born: performance.now()};
   Composite.add(engine.world, b);
   return b;
@@ -86,11 +141,12 @@ function onCollide(ev){
     if (a.person.tier !== b.person.tier || a.person.lv !== b.person.lv) continue;
     const {tier, lv} = a.person;
     if (tier === 2 && lv === 10) continue;        // 金の100歳はゴール。くっつかない
+    if (MODE === 'face' && lv >= FN - 1) continue; // 顔写真モードの最後の一人も、くっつかない
     a.merged = b.merged = true;
     const x = (a.position.x + b.position.x) / 2, y = (a.position.y + b.position.y) / 2;
     Composite.remove(engine.world, a); Composite.remove(engine.world, b);
     let nt = tier, nl = lv + 1;
-    if (nl === 10 && tier < 2){
+    if (MODE !== 'face' && nl === 10 && tier < 2){
       // 100歳になったら、次の色の赤ちゃんに生まれ変わる
       nt = tier + 1; nl = 0;
       banner = {text: `${TIER[nt]}あかちゃん 誕生！`, t: 0, tier: nt};
@@ -100,26 +156,36 @@ function onCollide(ev){
     Body.setVelocity(nb, {x: 0, y: -1.5});
     const gain = (lv + 1) * (lv + 2) / 2 * Math.pow(4, tier) + (nt > tier ? 200 * (tier + 1) : 0);
     score += gain;
-    effects.push({x, y, r: RADII[nl], t: 0, text: '+' + gain, tier: nt});
+    effects.push({x, y, r: rad(nl), t: 0, text: '+' + gain, tier: nt});
     buzz(12);
-    if (nt === 2 && nl === 10 && !won){
+    const goal = MODE === 'face' ? (nl === FN - 1) : (nt === 2 && nl === 10);
+    if (goal && !won){
       won = true;
-      setTimeout(() => { $('winScore').textContent = score; $('winOv').classList.add('on'); saveBest(); }, 900);
+      banner = MODE === 'face' ? {text: '最後の一人が登場！', t: 0, tier: 2} : banner;
+      setTimeout(() => {
+        $('winTitle').textContent = MODE === 'face' ? '🏆 全員そろった！ 🏆' : '🏆 金の100歳 達成！ 🏆';
+        $('winSub').textContent = MODE === 'face' ? `${FN}人の顔を、ぜんぶつなぎました。` : '人生を三周しました。';
+        $('winFace').innerHTML = MODE === 'face' ? `<img src="${FACES[FN - 1]}" alt="">` : '';
+        $('cont').style.display = MODE === 'face' ? 'none' : 'block';
+        $('winScore').textContent = score; $('winOv').classList.add('on'); saveBest();
+      }, 1200);
     }
   }
 }
 function buzz(p){ try{ navigator.vibrate && navigator.vibrate(p); }catch(e){} }
-function saveBest(){ if (score > best){ best = score; save('best', best); } }
+function bestKey(){ return MODE === 'face' ? 'best_face_' + FN : 'best'; }
+function saveBest(){ if (score > best){ best = score; save(bestKey(), best); } }
 
 // ================= 入力 =================
 const cv = $('cv'), ctx = cv.getContext('2d');
 let L = {};
 function toWorldX(clientX){ return (clientX - L.bx) / L.s; }
-function clampX(x){ const r = RADII[cur.lv]; return Math.max(r + 2, Math.min(W - r - 2, x)); }
+function clampX(x){ const r = rad(cur.lv); return Math.max(r + 2, Math.min(W - r - 2, x)); }
 cv.addEventListener('pointerdown', e => { if (!over) dropX = clampX(toWorldX(e.clientX)); });
 cv.addEventListener('pointermove', e => { if (!over && e.buttons) dropX = clampX(toWorldX(e.clientX)); });
+const anyOv = () => !!document.querySelector('.ov.on');
 cv.addEventListener('pointerup', e => {
-  if (over || !canDrop || $('winOv').classList.contains('on')) return;
+  if (over || !canDrop || anyOv()) return;
   dropX = clampX(toWorldX(e.clientX));
   makePerson(dropX, DROP_Y, cur.tier, cur.lv);
   cur = next; next = randDrop(); canDrop = false;
@@ -250,6 +316,27 @@ function drawPerson(x, y, r, ang, tier, lv, alpha = 1){
   }
 }
 
+function drawItem(x, y, r, ang, tier, lv, alpha = 1){
+  if (MODE !== 'face') return drawPerson(x, y, r, ang, tier, lv, alpha);
+  const img = FACE_IMG[lv];
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x, y); ctx.rotate(ang);
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.closePath();
+  ctx.fillStyle = '#f6d2b4'; ctx.fill();
+  if (img && img.complete){ ctx.save(); ctx.clip(); ctx.drawImage(img, -r, -r, r * 2, r * 2); ctx.restore(); }
+  ctx.lineWidth = Math.max(2, r * .08);
+  ctx.strokeStyle = lv === FN - 1 ? '#f3c64a' : '#c9925a'; ctx.stroke();
+  ctx.restore();
+  if (r > 12){
+    ctx.save(); ctx.globalAlpha = alpha;
+    ctx.fillStyle = lv === FN - 1 ? 'rgba(150,100,0,.92)' : 'rgba(90,61,30,.85)';
+    const br = Math.max(7, r * .24);
+    ctx.beginPath(); ctx.arc(x + r * .68, y + r * .68, br, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = `800 ${br * 1.1}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(lv + 1), x + r * .68, y + r * .7);
+    ctx.restore();
+  }
+}
+
 // ================= 描画 =================
 function draw(now){
   const {dpr, s, bx, by} = L;
@@ -273,13 +360,13 @@ function draw(now){
   if (!over){
     ctx.strokeStyle = 'rgba(120,80,40,.18)'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(dropX, DROP_Y); ctx.lineTo(dropX, H); ctx.stroke();
-    drawPerson(dropX, DROP_Y, RADII[cur.lv], 0, cur.tier, cur.lv, canDrop ? 1 : .35);
+    drawItem(dropX, DROP_Y, rad(cur.lv), 0, cur.tier, cur.lv, canDrop ? 1 : .35);
   }
   // 人
   for (const b of Composite.allBodies(engine.world)){
     if (!b.person) continue;
     const p = b.person, age = (now - p.born) / 160, sc = Math.min(1, .55 + age * .45);
-    drawPerson(b.position.x, b.position.y, RADII[p.lv] * sc, b.angle, p.tier, p.lv);
+    drawItem(b.position.x, b.position.y, rad(p.lv) * sc, b.angle, p.tier, p.lv);
   }
   // くっついたときのエフェクト
   effects = effects.filter(e => e.t < 1);
@@ -319,11 +406,17 @@ function drawHud(){
   const nx = land ? hx + 36 : hx + hw - 40, ny = land ? hy + 140 : hy + 40;
   ctx.fillStyle = '#fff6e6'; ctx.beginPath(); ctx.arc(nx, ny, 32, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#8a6440'; ctx.font = '700 12px system-ui'; ctx.textAlign = 'center'; ctx.fillText('つぎ', nx, ny - 48);
-  drawPerson(nx, ny, Math.min(26, RADII[next.lv] * .9), 0, next.tier, next.lv);
+  drawItem(nx, ny, Math.min(26, rad(next.lv) * .9), 0, next.tier, next.lv);
   // 成長の順番
   const icons = AGES.length - 1, gy = land ? hy + 200 : hy + 82;
   const sz = land ? Math.min(12, (hw - 110) / (icons * 2.3)) : Math.min(11, (hw - 110) / (icons * 2.5));
   ctx.textAlign = 'left'; ctx.fillStyle = '#8a6440'; ctx.font = '700 11px system-ui';
+  if (MODE === 'face'){
+    const n = FN, fz = land ? Math.min(13, (hw - 60) / (n * 2.3)) : Math.min(11, (hw - 60) / (n * 2.4));
+    for (let i = 0; i < n; i++) drawItem(hx + fz + i * fz * 2.3, gy + fz, fz, 0, 0, i);
+    ctx.fillText('→ ゴール', hx + n * fz * 2.3 + 2, gy + fz - 6);
+    return;
+  }
   for (let t = 0; t < 3; t++){
     const yy = land ? gy + t * (sz * 2.6 + 6) : gy;
     if (!land && t > 0) break;
@@ -336,12 +429,12 @@ function drawHud(){
 let last = performance.now();
 function loop(now){
   const dt = Math.min(33, now - last); last = now;
-  if (!over && !$('winOv').classList.contains('on')){
+  if (!over && !anyOv()){
     Engine.update(engine, dt);
     // 線より上に、落ち着いた人が2秒いたらゲームオーバー
     let above = false;
     for (const b of Composite.allBodies(engine.world)){
-      if (b.person && now - b.person.born > 1500 && b.position.y - RADII[b.person.lv] < LINE && Math.abs(b.velocity.y) < .6) above = true;
+      if (b.person && now - b.person.born > 1500 && b.position.y - rad(b.person.lv) < LINE && Math.abs(b.velocity.y) < .6) above = true;
     }
     overTimer = above ? overTimer + dt : 0;
     if (overTimer > 2000) gameOver();
@@ -358,6 +451,86 @@ function gameOver(){
 $('retry').onclick = reset;
 $('retry2').onclick = reset;
 $('cont').onclick = () => $('winOv').classList.remove('on');
+$('toMode').onclick = $('toMode2').onclick = () => { $('overOv').classList.remove('on'); $('winOv').classList.remove('on'); $('modeOv').classList.add('on'); };
+
+// ================= モード選択・顔写真の準備 =================
+$('mNormal').onclick = () => { MODE = 'normal'; $('modeOv').classList.remove('on'); reset(); };
+$('mFace').onclick = () => { $('modeOv').classList.remove('on'); openFaceSetup(); };
+let setupN = load('faceN', 6), setupFaces = load('faces', []);
+function openFaceSetup(){ renderFaceSetup(); $('faceOv').classList.add('on'); }
+function renderFaceSetup(){
+  const nb = $('fNums'); nb.innerHTML = '';
+  for (let i = 2; i <= 12; i++){
+    const b = document.createElement('button'); b.textContent = i; b.className = i === setupN ? 'on' : '';
+    b.onclick = () => { setupN = i; save('faceN', setupN); renderFaceSetup(); };
+    nb.appendChild(b);
+  }
+  const g = $('fGrid'); g.innerHTML = '';
+  for (let i = 0; i < setupN; i++){
+    const d = document.createElement('button'); d.className = 'slot';
+    d.innerHTML = (setupFaces[i] ? `<img src="${setupFaces[i]}" alt="">` : '<span>📷</span>') + `<b>${i + 1}</b>`;
+    d.onclick = () => takeFace(i);
+    g.appendChild(d);
+  }
+  const ready = setupFaces.slice(0, setupN).filter(Boolean).length === setupN;
+  $('fStart').disabled = !ready;
+  $('fStart').textContent = ready ? 'スタート！' : `あと${setupN - setupFaces.slice(0, setupN).filter(Boolean).length}人、撮影してください`;
+}
+$('fBack').onclick = () => { $('faceOv').classList.remove('on'); $('modeOv').classList.add('on'); };
+$('fStart').onclick = () => {
+  MODE = 'face'; FN = setupN; FACES = setupFaces.slice(0, FN);
+  FACE_IMG = FACES.map(u => { const im = new Image(); im.src = u; return im; });
+  $('faceOv').classList.remove('on'); reset();
+};
+
+// 撮影：アプリならカメラを直接起動、ブラウザならファイル選択（インカメラ）
+let shootSlot = 0;
+function takeFace(i){
+  shootSlot = i;
+  if (window.Android && Android.takePhoto) Android.takePhoto(); else $('camIn').click();
+}
+window.onNativePhoto = url => { if (url) openCrop(url); };
+$('camIn').onchange = e => { const f = e.target.files[0]; if (f) openCrop(URL.createObjectURL(f)); e.target.value = ''; };
+
+// 顔の位置合わせ：写真をドラッグして丸の中に顔を入れる
+let crop = null;
+function openCrop(url){
+  const im = new Image();
+  im.onload = () => {
+    const c = $('cropCv'), size = Math.min(innerWidth - 60, innerHeight - 260, 340);
+    c.width = c.height = size * 2; c.style.width = c.style.height = size + 'px';
+    const base = Math.max(size / im.width, size / im.height);
+    crop = {im, size, zoom: 1.4, base, ox: 0, oy: 0};
+    $('zoom').value = 1.4;
+    paintCrop(); $('cropOv').classList.add('on');
+  };
+  im.src = url;
+}
+function paintCrop(){
+  const c = $('cropCv'), x = c.getContext('2d'), {im, size, zoom, base, ox, oy} = crop, k = base * zoom;
+  x.setTransform(2, 0, 0, 2, 0, 0); x.clearRect(0, 0, size, size);
+  x.drawImage(im, size / 2 - im.width * k / 2 + ox, size / 2 - im.height * k / 2 + oy, im.width * k, im.height * k);
+  x.fillStyle = 'rgba(0,0,0,.55)'; x.beginPath(); x.rect(0, 0, size, size); x.arc(size / 2, size / 2, size * .42, 0, Math.PI * 2, true); x.fill();
+  x.strokeStyle = '#fff'; x.lineWidth = 2; x.beginPath(); x.arc(size / 2, size / 2, size * .42, 0, Math.PI * 2); x.stroke();
+}
+(() => {
+  const c = $('cropCv'); let st = null;
+  c.addEventListener('pointerdown', e => { c.setPointerCapture(e.pointerId); st = {x: e.clientX, y: e.clientY, ox: crop.ox, oy: crop.oy}; });
+  c.addEventListener('pointermove', e => { if (!st) return; crop.ox = st.ox + e.clientX - st.x; crop.oy = st.oy + e.clientY - st.y; paintCrop(); });
+  c.addEventListener('pointerup', () => st = null);
+  $('zoom').oninput = () => { crop.zoom = +$('zoom').value; paintCrop(); };
+})();
+$('cropRetake').onclick = () => { $('cropOv').classList.remove('on'); takeFace(shootSlot); };
+$('cropOk').onclick = () => {
+  const {im, size, zoom, base, ox, oy} = crop, k = base * zoom, out = 160, rr = size * .42;
+  const c = document.createElement('canvas'); c.width = c.height = out;
+  const x = c.getContext('2d'), sc = out / (rr * 2);
+  x.setTransform(sc, 0, 0, sc, -(size / 2 - rr) * sc, -(size / 2 - rr) * sc);
+  x.drawImage(im, size / 2 - im.width * k / 2 + ox, size / 2 - im.height * k / 2 + oy, im.width * k, im.height * k);
+  setupFaces[shootSlot] = c.toDataURL('image/jpeg', .85);
+  save('faces', setupFaces);
+  $('cropOv').classList.remove('on'); renderFaceSetup();
+};
 
 reset(); layout(); requestAnimationFrame(loop);
 </script>
