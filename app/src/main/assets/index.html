@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>エイジスイカ</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#fbe9c9;font-family:"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  #cv{position:fixed;inset:0;width:100%;height:100%;touch-action:none}
+  .ov{position:fixed;inset:0;background:rgba(60,35,10,.55);display:none;align-items:center;justify-content:center;z-index:5}
+  .ov.on{display:flex}
+  .card{background:#fff8ee;border-radius:24px;padding:24px 22px;text-align:center;width:min(82vw,340px);box-shadow:0 6px 0 #c99b66}
+  .card h2{margin:0 0 6px;color:#5a3d1e;font-size:26px}
+  .card p{margin:4px 0;color:#7a5a36}
+  .card .big{font-size:34px;font-weight:900;color:#5a3d1e}
+  .card button{display:block;width:100%;height:48px;margin-top:12px;border:none;border-radius:24px;font-size:17px;font-weight:800;color:#fff;background:#f08a24;box-shadow:0 4px 0 #b55f0c;font-family:inherit}
+  .card button.sub{background:#8a7bd8;box-shadow:0 4px 0 #5b4daa}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="ov" id="overOv"><div class="card">
+  <h2>ゲームオーバー</h2>
+  <p>スコア</p><div class="big" id="overScore">0</div>
+  <p id="overBest"></p>
+  <button id="retry">もう一度</button>
+</div></div>
+
+<div class="ov" id="winOv"><div class="card">
+  <h2>🏆 金の100歳 達成！ 🏆</h2>
+  <p>人生を三周しました。</p>
+  <p>スコア</p><div class="big" id="winScore">0</div>
+  <button id="cont">このまま続ける</button>
+  <button class="sub" id="retry2">最初から</button>
+</div></div>
+
+<script src="matter.min.js"></script>
+<script>
+"use strict";
+const {Engine, Bodies, Body, Composite, Events} = Matter;
+const $ = id => document.getElementById(id);
+
+// ================= 設定 =================
+const AGES = [1, 3, 6, 10, 15, 20, 30, 45, 60, 80, 100];        // 段階（100歳は最後の金だけ）
+const NAMES = ['あかちゃん','3歳','6歳','10歳','15歳','20歳','30歳','45歳','60歳','80歳','100歳'];
+const RADII = [17, 22, 28, 34, 41, 49, 58, 68, 79, 91, 104];     // 箱の幅400に対する半径
+const TIER = ['', '銀の', '金の'];
+const W = 400, H = 640, WALL = 14, LINE = 118, DROP_Y = 62;   // 箱の中の座標
+const DROP_LEVELS = [0, 0, 0, 1, 1, 2, 2, 3, 4];             // 落ちてくる人の候補（若いほど出やすい）
+
+// ================= 状態 =================
+let engine, score = 0, best = load('best', 0), cur, next, dropX = W / 2, canDrop = true, over = false, won = false;
+let effects = [], banner = null, overTimer = 0;
+function load(k, d){ try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; }catch(e){ return d; } }
+function save(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+const randDrop = () => ({tier: 0, lv: DROP_LEVELS[Math.floor(Math.random() * DROP_LEVELS.length)]});
+
+function reset(){
+  engine = Engine.create({gravity: {y: 1.1}});
+  const o = {isStatic: true, friction: .4, render: {visible: false}};
+  Composite.add(engine.world, [
+    Bodies.rectangle(W / 2, H + WALL / 2, W + WALL * 2, WALL * 2, o),
+    Bodies.rectangle(-WALL / 2, H / 2, WALL * 2, H * 2, o),
+    Bodies.rectangle(W + WALL / 2, H / 2, WALL * 2, H * 2, o),
+  ]);
+  Events.on(engine, 'collisionStart', onCollide);
+  Events.on(engine, 'collisionActive', onCollide);
+  score = 0; over = false; won = false; effects = []; banner = null; overTimer = 0;
+  cur = randDrop(); next = randDrop(); canDrop = true;
+  $('overOv').classList.remove('on'); $('winOv').classList.remove('on');
+}
+
+function makePerson(x, y, tier, lv){
+  const b = Bodies.circle(x, y, RADII[lv], {restitution: .12, friction: .35, frictionStatic: .6, density: .0012 + lv * .0001});
+  b.person = {tier, lv, born: performance.now()};
+  Composite.add(engine.world, b);
+  return b;
+}
+
+// ================= くっつく（同じ年齢・同じ色どうし） =================
+function onCollide(ev){
+  for (const pr of ev.pairs){
+    const a = pr.bodyA, b = pr.bodyB;
+    if (!a.person || !b.person || a.merged || b.merged) continue;
+    if (a.person.tier !== b.person.tier || a.person.lv !== b.person.lv) continue;
+    const {tier, lv} = a.person;
+    if (tier === 2 && lv === 10) continue;        // 金の100歳はゴール。くっつかない
+    a.merged = b.merged = true;
+    const x = (a.position.x + b.position.x) / 2, y = (a.position.y + b.position.y) / 2;
+    Composite.remove(engine.world, a); Composite.remove(engine.world, b);
+    let nt = tier, nl = lv + 1;
+    if (nl === 10 && tier < 2){
+      // 100歳になったら、次の色の赤ちゃんに生まれ変わる
+      nt = tier + 1; nl = 0;
+      banner = {text: `${TIER[nt]}あかちゃん 誕生！`, t: 0, tier: nt};
+      buzz([30, 40, 30]);
+    }
+    const nb = makePerson(x, y, nt, nl);
+    Body.setVelocity(nb, {x: 0, y: -1.5});
+    const gain = (lv + 1) * (lv + 2) / 2 * Math.pow(4, tier) + (nt > tier ? 200 * (tier + 1) : 0);
+    score += gain;
+    effects.push({x, y, r: RADII[nl], t: 0, text: '+' + gain, tier: nt});
+    buzz(12);
+    if (nt === 2 && nl === 10 && !won){
+      won = true;
+      setTimeout(() => { $('winScore').textContent = score; $('winOv').classList.add('on'); saveBest(); }, 900);
+    }
+  }
+}
+function buzz(p){ try{ navigator.vibrate && navigator.vibrate(p); }catch(e){} }
+function saveBest(){ if (score > best){ best = score; save('best', best); } }
+
+// ================= 入力 =================
+const cv = $('cv'), ctx = cv.getContext('2d');
+let L = {};
+function toWorldX(clientX){ return (clientX - L.bx) / L.s; }
+function clampX(x){ const r = RADII[cur.lv]; return Math.max(r + 2, Math.min(W - r - 2, x)); }
+cv.addEventListener('pointerdown', e => { if (!over) dropX = clampX(toWorldX(e.clientX)); });
+cv.addEventListener('pointermove', e => { if (!over && e.buttons) dropX = clampX(toWorldX(e.clientX)); });
+cv.addEventListener('pointerup', e => {
+  if (over || !canDrop || $('winOv').classList.contains('on')) return;
+  dropX = clampX(toWorldX(e.clientX));
+  makePerson(dropX, DROP_Y, cur.tier, cur.lv);
+  cur = next; next = randDrop(); canDrop = false;
+  setTimeout(() => canDrop = true, 550);
+});
+
+// ================= レイアウト（縦・横） =================
+function layout(){
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const VW = innerWidth, VH = innerHeight;
+  cv.width = VW * dpr; cv.height = VH * dpr;
+  L.dpr = dpr; L.VW = VW; L.VH = VH;
+  if (VW > VH * 1.05){
+    // 横：左に箱、右に情報
+    L.land = true;
+    L.s = Math.min((VH - 24) / (H + 20), (VW * .58) / (W + WALL * 2));
+    L.bx = (VW * .6 - W * L.s) / 2; L.by = (VH - H * L.s) / 2;
+    L.hx = VW * .6 + 10; L.hy = 20; L.hw = VW * .4 - 30;
+  } else {
+    // 縦：上に情報、下に箱
+    L.land = false;
+    const top = 112;
+    L.s = Math.min((VW - 24) / (W + WALL * 2), (VH - top - 16) / (H + 10));
+    L.bx = (VW - W * L.s) / 2; L.by = top + Math.min(40, (VH - top - 10 - H * L.s) / 2);
+    L.hx = 14; L.hy = 12; L.hw = VW - 28;
+  }
+}
+addEventListener('resize', layout);
+
+// ================= 人の絵 =================
+const SKIN = '#f6d2b4';
+function headFill(r, tier){
+  if (tier === 0) return SKIN;
+  const g = ctx.createRadialGradient(-r * .35, -r * .4, r * .1, 0, 0, r);
+  if (tier === 1){ g.addColorStop(0, '#ffffff'); g.addColorStop(.45, '#d9dde3'); g.addColorStop(1, '#8e959e'); }
+  else { g.addColorStop(0, '#fff6c8'); g.addColorStop(.45, '#f3c64a'); g.addColorStop(1, '#b07c10'); }
+  return g;
+}
+function drawPerson(x, y, r, ang, tier, lv, alpha = 1){
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang); ctx.globalAlpha = alpha;
+  const ink = tier === 0 ? '#3a2a20' : tier === 1 ? '#4b525c' : '#6b4a06';
+  const hairC = tier === 0 ? ['#3a2a20','#3a2a20','#3a2a20','#4a3424','#2a2a2a','#7a4a28','#2e241c','#2e241c','#8c8c8c','#d9d9d9','#f0f0f0'][lv]
+              : tier === 1 ? '#7d858f' : '#a87708';
+  // 顔
+  ctx.fillStyle = headFill(r, tier);
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+  ctx.lineWidth = Math.max(1.5, r * .06); ctx.strokeStyle = tier === 0 ? '#d9a982' : tier === 1 ? '#6d747d' : '#8a5e00';
+  ctx.stroke();
+  // 髪・帽子
+  ctx.fillStyle = hairC;
+  if (lv === 0){                      // あかちゃん：くるんとした毛
+    ctx.lineWidth = r * .1; ctx.strokeStyle = hairC;
+    ctx.beginPath(); ctx.arc(0, -r * .82, r * .16, Math.PI * .2, Math.PI * 1.7); ctx.stroke();
+  } else if (lv === 1){               // 3歳：ぴょこっと
+    ctx.beginPath(); ctx.ellipse(0, -r * .78, r * .55, r * .28, 0, Math.PI, 0); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(-r * .05, -r * 1.02); ctx.quadraticCurveTo(r * .1, -r * 1.25, r * .25, -r * 1.05); ctx.lineWidth = r * .08; ctx.strokeStyle = hairC; ctx.stroke();
+  } else if (lv === 2){               // 6歳：黄色い通学帽
+    ctx.fillStyle = tier === 0 ? '#ffd23f' : hairC;
+    ctx.beginPath(); ctx.ellipse(0, -r * .55, r * .85, r * .55, 0, Math.PI, 0); ctx.fill();
+    ctx.fillRect(-r * .95, -r * .58, r * 1.9, r * .12);
+  } else if (lv === 3){               // 10歳：前髪
+    ctx.beginPath(); ctx.ellipse(0, -r * .5, r * .9, r * .55, 0, Math.PI, 0); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(-r * .8, -r * .5); ctx.lineTo(-r * .5, -r * .25); ctx.lineTo(-r * .2, -r * .48); ctx.lineTo(r * .1, -r * .25); ctx.lineTo(r * .4, -r * .48); ctx.lineTo(r * .8, -r * .4); ctx.lineTo(r * .8, -r * .55); ctx.fill();
+  } else if (lv === 4){               // 15歳：学生帽
+    ctx.fillStyle = tier === 0 ? '#1d2433' : hairC;
+    ctx.beginPath(); ctx.ellipse(0, -r * .6, r * .82, r * .45, 0, Math.PI, 0); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, -r * .55, r * .9, r * .14, 0, 0, Math.PI); ctx.fill();
+    ctx.fillStyle = tier === 0 ? '#e6c35a' : '#fff'; ctx.beginPath(); ctx.arc(0, -r * .82, r * .08, 0, Math.PI * 2); ctx.fill();
+  } else if (lv === 5){               // 20歳：おしゃれ髪
+    ctx.beginPath(); ctx.moveTo(-r * .95, -r * .1); ctx.quadraticCurveTo(-r * 1.05, -r * 1.05, r * .1, -r * 1.02); ctx.quadraticCurveTo(r * 1.05, -r * .9, r * .95, -r * .1);
+    ctx.quadraticCurveTo(r * .6, -r * .6, -r * .1, -r * .55); ctx.quadraticCurveTo(-r * .6, -r * .5, -r * .95, -r * .1); ctx.fill();
+  } else if (lv === 6){               // 30歳：きっちり七三
+    ctx.beginPath(); ctx.ellipse(0, -r * .5, r * .95, r * .55, 0, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = headFill(r, tier); ctx.fillRect(-r * .25, -r * .62, r * .04, r * .2);
+  } else if (lv === 7){               // 45歳：おでこ広め＋ひげ
+    ctx.beginPath(); ctx.ellipse(-r * .78, -r * .3, r * .22, r * .42, -.3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(r * .78, -r * .3, r * .22, r * .42, .3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, -r * .82, r * .4, r * .14, 0, Math.PI, 0); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(-r * .16, r * .32, r * .18, r * .07, .2, 0, Math.PI * 2); ctx.ellipse(r * .16, r * .32, r * .18, r * .07, -.2, 0, Math.PI * 2); ctx.fill();
+  } else if (lv >= 8){                // 60歳〜：横だけ髪（白くなっていく）
+    ctx.beginPath(); ctx.ellipse(-r * .82, -r * .2, r * .2, r * .38, -.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(r * .82, -r * .2, r * .2, r * .38, .2, 0, Math.PI * 2); ctx.fill();
+    if (lv >= 9){                     // 80歳〜：しわ
+      ctx.strokeStyle = ink; ctx.globalAlpha = alpha * .35; ctx.lineWidth = r * .03;
+      [-.55, -.45].forEach(yy => { ctx.beginPath(); ctx.moveTo(-r * .3, r * yy); ctx.quadraticCurveTo(0, r * (yy - .05), r * .3, r * yy); ctx.stroke(); });
+      ctx.globalAlpha = alpha;
+    }
+    if (lv === 10){                   // 100歳：白いひげ＋王冠
+      ctx.fillStyle = tier === 2 ? '#fff3c4' : '#f4f4f4';
+      ctx.beginPath(); ctx.moveTo(-r * .5, r * .3); ctx.quadraticCurveTo(0, r * 1.15, r * .5, r * .3); ctx.quadraticCurveTo(0, r * .55, -r * .5, r * .3); ctx.fill();
+      ctx.fillStyle = '#ffcf33'; ctx.strokeStyle = '#b8860b'; ctx.lineWidth = r * .04;
+      ctx.beginPath(); ctx.moveTo(-r * .5, -r * .78); ctx.lineTo(-r * .5, -r * 1.12); ctx.lineTo(-r * .25, -r * .92); ctx.lineTo(0, -r * 1.2); ctx.lineTo(r * .25, -r * .92); ctx.lineTo(r * .5, -r * 1.12); ctx.lineTo(r * .5, -r * .78); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+  }
+  // 目
+  const ey = lv === 0 ? r * .05 : -r * .02, ex = r * .32, es = Math.max(1.6, r * (lv <= 1 ? .13 : .09));
+  ctx.fillStyle = ink;
+  if (lv >= 9){ ctx.lineWidth = Math.max(1.2, r * .05); ctx.strokeStyle = ink;
+    [-1, 1].forEach(k => { ctx.beginPath(); ctx.arc(k * ex, ey, es * 1.2, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }); }
+  else [-1, 1].forEach(k => { ctx.beginPath(); ctx.arc(k * ex, ey, es, 0, Math.PI * 2); ctx.fill(); });
+  // メガネ（60歳・80歳）
+  if (lv === 8 || lv === 9){ ctx.strokeStyle = ink; ctx.lineWidth = Math.max(1, r * .04);
+    [-1, 1].forEach(k => { ctx.beginPath(); ctx.arc(k * ex, ey, r * .17, 0, Math.PI * 2); ctx.stroke(); });
+    ctx.beginPath(); ctx.moveTo(-ex + r * .17, ey); ctx.lineTo(ex - r * .17, ey); ctx.stroke(); }
+  // ほっぺ
+  ctx.fillStyle = tier === 0 ? 'rgba(255,120,120,.35)' : 'rgba(255,255,255,.35)';
+  [-1, 1].forEach(k => { ctx.beginPath(); ctx.ellipse(k * r * .55, r * .22, r * .14, r * .09, 0, 0, Math.PI * 2); ctx.fill(); });
+  // 口
+  if (lv === 0){ ctx.fillStyle = tier === 0 ? '#7fc8f8' : ink; ctx.beginPath(); ctx.arc(0, r * .38, r * .14, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = tier === 0 ? '#fff' : headFill(r, tier); ctx.beginPath(); ctx.arc(0, r * .38, r * .06, 0, Math.PI * 2); ctx.fill(); }
+  else if (lv !== 10 && lv !== 7){ ctx.strokeStyle = ink; ctx.lineWidth = Math.max(1.2, r * .05);
+    ctx.beginPath(); ctx.arc(0, r * .22, r * .2, Math.PI * .15, Math.PI * .85); ctx.stroke(); }
+  // 銀・金はキラッと
+  if (tier > 0){ ctx.fillStyle = 'rgba(255,255,255,.85)';
+    const tw = (Math.sin(performance.now() / 300 + x) + 1) / 2;
+    ctx.beginPath(); ctx.arc(-r * .45, -r * .45, r * (.06 + tw * .05), 0, Math.PI * 2); ctx.fill(); }
+  ctx.restore();
+  // 年齢の札（回転させない）
+  if (r > 12){
+    ctx.save(); ctx.globalAlpha = alpha;
+    const t = (tier ? TIER[tier].slice(0, 1) : '') + AGES[lv];
+    ctx.font = `800 ${Math.max(8, r * .32)}px system-ui, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const tw2 = ctx.measureText(t).width + r * .2;
+    ctx.fillStyle = tier === 0 ? 'rgba(90,61,30,.85)' : tier === 1 ? 'rgba(80,88,98,.9)' : 'rgba(150,100,0,.9)';
+    ctx.beginPath(); ctx.roundRect(x - tw2 / 2, y + r * .62, tw2, r * .4, r * .2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.fillText(t, x, y + r * .83);
+    ctx.restore();
+  }
+}
+
+// ================= 描画 =================
+function draw(now){
+  const {dpr, s, bx, by} = L;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, L.VW, L.VH);
+  // 情報欄
+  drawHud();
+  // 箱
+  ctx.save(); ctx.translate(bx, by); ctx.scale(s, s);
+  ctx.fillStyle = '#fff6e6'; ctx.strokeStyle = '#c9925a'; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.roundRect(-WALL, -6, W + WALL * 2, H + WALL + 6, [10, 10, 18, 18]); ctx.fill();
+  ctx.fillStyle = '#c9925a'; ctx.fillRect(-WALL, LINE - 6, 0, 0);
+  ctx.beginPath(); ctx.roundRect(-WALL, -6, WALL, H + WALL + 6, 8); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(W, -6, WALL, H + WALL + 6, 8); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(-WALL, H, W + WALL * 2, WALL, 8); ctx.fill();
+  // デッドライン
+  const danger = overTimer > 0;
+  ctx.strokeStyle = danger ? `rgba(220,40,40,${.5 + .5 * Math.sin(now / 90)})` : 'rgba(200,80,60,.35)';
+  ctx.setLineDash([10, 8]); ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0, LINE); ctx.lineTo(W, LINE); ctx.stroke(); ctx.setLineDash([]);
+  // 落とす位置のガイドと、次に落ちる人
+  if (!over){
+    ctx.strokeStyle = 'rgba(120,80,40,.18)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(dropX, DROP_Y); ctx.lineTo(dropX, H); ctx.stroke();
+    drawPerson(dropX, DROP_Y, RADII[cur.lv], 0, cur.tier, cur.lv, canDrop ? 1 : .35);
+  }
+  // 人
+  for (const b of Composite.allBodies(engine.world)){
+    if (!b.person) continue;
+    const p = b.person, age = (now - p.born) / 160, sc = Math.min(1, .55 + age * .45);
+    drawPerson(b.position.x, b.position.y, RADII[p.lv] * sc, b.angle, p.tier, p.lv);
+  }
+  // くっついたときのエフェクト
+  effects = effects.filter(e => e.t < 1);
+  for (const e of effects){
+    e.t += 1 / 50;
+    ctx.globalAlpha = 1 - e.t;
+    ctx.strokeStyle = e.tier === 2 ? '#f3c64a' : e.tier === 1 ? '#cfd5dc' : '#ffb347';
+    ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(e.x, e.y, e.r * (1 + e.t * .8), 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#7a4a18'; ctx.font = '900 20px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText(e.text, e.x, e.y - e.r - 10 - e.t * 24);
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+  // 生まれ変わりのお知らせ
+  if (banner){
+    banner.t += 1 / 120;
+    if (banner.t >= 1) banner = null;
+    else {
+      const a = banner.t < .15 ? banner.t / .15 : banner.t > .8 ? (1 - banner.t) / .2 : 1;
+      ctx.globalAlpha = a;
+      const cx = bx + W * s / 2, cy = by + H * s * .4;
+      ctx.fillStyle = banner.tier === 2 ? 'rgba(150,100,0,.92)' : 'rgba(80,88,98,.92)';
+      ctx.beginPath(); ctx.roundRect(cx - 150, cy - 30, 300, 60, 30); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = '900 22px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('✨ ' + banner.text + ' ✨', cx, cy);
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+function drawHud(){
+  const {hx, hy, hw, land} = L;
+  ctx.fillStyle = '#5a3d1e'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.font = '700 13px system-ui'; ctx.fillText('スコア', hx, hy);
+  ctx.font = '900 28px system-ui'; ctx.fillText(score.toLocaleString(), hx, hy + 16);
+  ctx.font = '700 12px system-ui'; ctx.fillStyle = '#8a6440'; ctx.fillText('ベスト ' + Math.max(best, score).toLocaleString(), hx, hy + 50);
+  // 次の人
+  const nx = land ? hx + 36 : hx + hw - 40, ny = land ? hy + 140 : hy + 40;
+  ctx.fillStyle = '#fff6e6'; ctx.beginPath(); ctx.arc(nx, ny, 32, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#8a6440'; ctx.font = '700 12px system-ui'; ctx.textAlign = 'center'; ctx.fillText('つぎ', nx, ny - 48);
+  drawPerson(nx, ny, Math.min(26, RADII[next.lv] * .9), 0, next.tier, next.lv);
+  // 成長の順番
+  const icons = AGES.length - 1, gy = land ? hy + 200 : hy + 82;
+  const sz = land ? Math.min(12, (hw - 110) / (icons * 2.3)) : Math.min(11, (hw - 110) / (icons * 2.5));
+  ctx.textAlign = 'left'; ctx.fillStyle = '#8a6440'; ctx.font = '700 11px system-ui';
+  for (let t = 0; t < 3; t++){
+    const yy = land ? gy + t * (sz * 2.6 + 6) : gy;
+    if (!land && t > 0) break;
+    for (let i = 0; i < icons; i++) drawPerson(hx + sz + i * sz * 2.3, yy + sz, sz, 0, land ? t : 0, i);
+    ctx.fillText('→ ' + (t < 2 ? TIER[t + 1] + 'あかちゃん' : '金の100歳'), hx + icons * sz * 2.3 + 2, yy + sz - 6);
+  }
+}
+
+// ================= ループ =================
+let last = performance.now();
+function loop(now){
+  const dt = Math.min(33, now - last); last = now;
+  if (!over && !$('winOv').classList.contains('on')){
+    Engine.update(engine, dt);
+    // 線より上に、落ち着いた人が2秒いたらゲームオーバー
+    let above = false;
+    for (const b of Composite.allBodies(engine.world)){
+      if (b.person && now - b.person.born > 1500 && b.position.y - RADII[b.person.lv] < LINE && Math.abs(b.velocity.y) < .6) above = true;
+    }
+    overTimer = above ? overTimer + dt : 0;
+    if (overTimer > 2000) gameOver();
+  }
+  draw(now);
+  requestAnimationFrame(loop);
+}
+function gameOver(){
+  over = true; saveBest();
+  $('overScore').textContent = score.toLocaleString();
+  $('overBest').textContent = 'ベスト ' + best.toLocaleString();
+  setTimeout(() => $('overOv').classList.add('on'), 400);
+}
+$('retry').onclick = reset;
+$('retry2').onclick = reset;
+$('cont').onclick = () => $('winOv').classList.remove('on');
+
+reset(); layout(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
