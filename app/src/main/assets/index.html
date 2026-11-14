@@ -168,6 +168,7 @@ function onCollide(ev){
         $('winFace').innerHTML = MODE === 'face' ? `<img src="${FACES[FN - 1]}" alt="">` : '';
         $('cont').style.display = MODE === 'face' ? 'none' : 'block';
         $('winScore').textContent = score; $('winOv').classList.add('on'); saveBest();
+        if (MODE === 'face') wipeFaces();
       }, 1200);
     }
   }
@@ -444,19 +445,31 @@ function loop(now){
 }
 function gameOver(){
   over = true; saveBest();
+  if (MODE === 'face') setTimeout(wipeFaces, 500);
   $('overScore').textContent = score.toLocaleString();
   $('overBest').textContent = 'ベスト ' + best.toLocaleString();
   setTimeout(() => $('overOv').classList.add('on'), 400);
 }
-$('retry').onclick = reset;
-$('retry2').onclick = reset;
+// 顔写真モードは写真を消しているので、もう一度遊ぶときは撮り直し
+function closeEnd(){ $('overOv').classList.remove('on'); $('winOv').classList.remove('on'); $('winFace').innerHTML = ''; }
+function again(){ closeEnd(); if (MODE === 'face'){ wipeFaces(); openFaceSetup(); } else reset(); }
+$('retry').onclick = again;
+$('retry2').onclick = again;
 $('cont').onclick = () => $('winOv').classList.remove('on');
-$('toMode').onclick = $('toMode2').onclick = () => { $('overOv').classList.remove('on'); $('winOv').classList.remove('on'); $('modeOv').classList.add('on'); };
+$('toMode').onclick = $('toMode2').onclick = () => { closeEnd(); if (MODE === 'face') wipeFaces(); $('modeOv').classList.add('on'); };
 
 // ================= モード選択・顔写真の準備 =================
 $('mNormal').onclick = () => { MODE = 'normal'; $('modeOv').classList.remove('on'); reset(); };
 $('mFace').onclick = () => { $('modeOv').classList.remove('on'); openFaceSetup(); };
-let setupN = load('faceN', 6), setupFaces = load('faces', []);
+// 顔写真はスマホに保存しない（メモリ上だけ）。以前の版で保存したものも消す
+let setupN = load('faceN', 6), setupFaces = [];
+try { localStorage.removeItem('faces'); } catch(e){}
+function wipeFaces(){
+  setupFaces = []; FACES = [];
+  FACE_IMG.forEach(im => { im.src = ''; }); FACE_IMG = [];
+  crop = null;
+  const c = $('cropCv'); c.getContext('2d').clearRect(0, 0, c.width, c.height); c.width = c.height = 1;
+}
 function openFaceSetup(){ renderFaceSetup(); $('faceOv').classList.add('on'); }
 function renderFaceSetup(){
   const nb = $('fNums'); nb.innerHTML = '';
@@ -476,7 +489,7 @@ function renderFaceSetup(){
   $('fStart').disabled = !ready;
   $('fStart').textContent = ready ? 'スタート！' : `あと${setupN - setupFaces.slice(0, setupN).filter(Boolean).length}人、撮影してください`;
 }
-$('fBack').onclick = () => { $('faceOv').classList.remove('on'); $('modeOv').classList.add('on'); };
+$('fBack').onclick = () => { wipeFaces(); $('faceOv').classList.remove('on'); $('modeOv').classList.add('on'); };
 $('fStart').onclick = () => {
   MODE = 'face'; FN = setupN; FACES = setupFaces.slice(0, FN);
   FACE_IMG = FACES.map(u => { const im = new Image(); im.src = u; return im; });
@@ -500,7 +513,7 @@ function openCrop(url){
     const c = $('cropCv'), size = Math.min(innerWidth - 60, innerHeight - 260, 340);
     c.width = c.height = size * 2; c.style.width = c.style.height = size + 'px';
     const base = Math.max(size / im.width, size / im.height);
-    crop = {im, size, zoom: 1.4, base, ox: 0, oy: 0};
+    crop = {im, size, zoom: 1.4, base, ox: 0, oy: 0, url};
     $('zoom').value = 1.4;
     paintCrop(); $('cropOv').classList.add('on');
   };
@@ -528,7 +541,7 @@ $('cropOk').onclick = () => {
   x.setTransform(sc, 0, 0, sc, -(size / 2 - rr) * sc, -(size / 2 - rr) * sc);
   x.drawImage(im, size / 2 - im.width * k / 2 + ox, size / 2 - im.height * k / 2 + oy, im.width * k, im.height * k);
   setupFaces[shootSlot] = c.toDataURL('image/jpeg', .85);
-  save('faces', setupFaces);
+  if (crop && crop.url && crop.url.startsWith('blob:')) URL.revokeObjectURL(crop.url);
   $('cropOv').classList.remove('on'); renderFaceSetup();
 };
 
